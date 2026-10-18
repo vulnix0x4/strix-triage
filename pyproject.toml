@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strix-triage"
+version = "0.1.0"
+description = "Strix — a static malware triage & analysis framework for safely dissecting suspicious files without executing them."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Strix contributors" }]
+keywords = ["malware", "static-analysis", "triage", "dfir", "yara", "pe", "elf", "macho", "security"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+]
+
+# Strix has ZERO required third-party dependencies. It parses PE/ELF/Mach-O in
+# pure Python so an analyst can drop it onto an air-gapped triage box and run it.
+dependencies = []
+
+[project.optional-dependencies]
+# Optional accelerators / integrations. Strix degrades gracefully without them.
+yara = ["yara-python>=4.2"]
+fuzzy = ["ssdeep>=3.4"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+strix = "strix.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["strix*"]
+
+[tool.setuptools.package-data]
+"strix.detect" = ["rules/*.strx", "rules/*.yar"]

@@ -1,0 +1,53 @@
+// Strix bundled rules — ransomware behaviors.
+// Defensive detection signatures only.
+
+rule Ransom_ShadowCopy_Destruction {
+    meta:
+        severity    = critical
+        category    = ransomware
+        attack      = T1490, T1486
+        description = "Destroys recovery options (shadow copies / backups / boot recovery) — hallmark ransomware precursor"
+        reference   = "ATT&CK T1490 Inhibit System Recovery"
+    strings:
+        $vss1 = "vssadmin delete shadows" nocase
+        $vss2 = "vssadmin.exe delete shadows" nocase
+        $wmic = "wmic shadowcopy delete" nocase
+        $wba  = "wbadmin delete catalog" nocase
+        $bcd1 = "bcdedit /set {default} recoveryenabled no" nocase
+        $bcd2 = "bcdedit /set {default} bootstatuspolicy ignoreallfailures" nocase
+        $res  = "resize shadowstorage" nocase
+    condition:
+        any of them
+}
+
+rule Ransom_Note_Indicators {
+    meta:
+        severity    = high
+        category    = ransomware
+        attack      = T1486
+        description = "Text strongly associated with ransom notes"
+    strings:
+        $n1 = "your files have been encrypted" nocase wide
+        $n2 = "all your files are encrypted" nocase wide
+        $n3 = "to decrypt your files" nocase wide
+        $n4 = "pay the ransom" nocase wide
+        $n5 = "bitcoin wallet" nocase wide
+        $n6 = ".onion" nocase
+        $ext1 = /\.(locky|wncry|crypt|crypted|encrypted|cerber|zepto|odin)/ nocase
+    condition:
+        2 of ($n*) or ($ext1 and 1 of ($n*))
+}
+
+rule Ransom_Crypto_And_Recovery_Combo {
+    meta:
+        severity    = critical
+        category    = ransomware
+        attack      = T1486, T1490
+        description = "Combines a recovery-destruction command with an encryption/ransom reference"
+    strings:
+        $recovery = /vssadmin|wbadmin|bcdedit|shadowcopy/ nocase
+        $enc = "encrypt" nocase
+        $ransom = /ransom|bitcoin|decrypt|\.onion/ nocase
+    condition:
+        $recovery and $enc and $ransom
+}

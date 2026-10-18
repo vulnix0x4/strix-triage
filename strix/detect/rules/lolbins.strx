@@ -1,0 +1,68 @@
+// Strix bundled rules — living-off-the-land binaries & script abuse.
+
+rule LOLBin_Download_Cradles {
+    meta:
+        severity    = high
+        category    = execution
+        attack      = T1105, T1059.001
+        description = "Built-in Windows tools used to fetch remote payloads"
+    strings:
+        $certutil = /certutil(\.exe)?\s+(-urlcache|-f|-decode|-split)/ nocase
+        $bits     = /bitsadmin(\.exe)?\s+\/transfer/ nocase
+        $ps_dl1   = "downloadstring(" nocase
+        $ps_dl2   = "downloadfile(" nocase
+        $ps_dl3   = "net.webclient" nocase
+        $ps_dl4   = "start-bitstransfer" nocase
+        $curl     = /curl(\.exe)?\s+-[^\n]{0,40}(http|ftp)/ nocase
+    condition:
+        any of them
+}
+
+rule PowerShell_Obfuscated_Execution {
+    meta:
+        severity    = high
+        category    = execution
+        attack      = T1059.001, T1027, T1140
+        description = "Obfuscated / stealthy PowerShell invocation patterns"
+    strings:
+        $enc  = /-e(nc(odedcommand)?)?\s+[A-Za-z0-9+\/=]{30,}/ nocase
+        $b64  = "frombase64string" nocase
+        $iex  = /iex\s*\(|invoke-expression/ nocase
+        $nop  = /-nop(rofile)?\b/ nocase
+        $hid  = /-w(indowstyle)?\s+hidden/ nocase
+        $bypass = "-executionpolicy bypass" nocase
+    condition:
+        $enc or ($b64 and $iex) or (2 of ($nop,$hid,$bypass,$iex))
+}
+
+rule LOLBin_Script_Proxy_Execution {
+    meta:
+        severity    = high
+        category    = defense-evasion
+        attack      = T1218
+        description = "Signed binary proxy execution (mshta / rundll32 / regsvr32 squiblydoo)"
+    strings:
+        $mshta   = /mshta(\.exe)?\s+(javascript:|vbscript:|http)/ nocase
+        $rundll  = /rundll32(\.exe)?\s+[^\n]{0,80}(javascript:|,\s*\w)/ nocase
+        $squib   = /regsvr32(\.exe)?\s+\/s\s+\/u?\s*\/i:/ nocase
+        $scrobj  = "scrobj.dll" nocase
+    condition:
+        any of them
+}
+
+rule Persistence_Autostart_Commands {
+    meta:
+        severity    = medium
+        category    = persistence
+        attack      = T1547.001, T1053.005
+        description = "Commands that establish autostart persistence"
+    strings:
+        $run   = /currentversion\\run/ nocase
+        $regadd = /reg\s+add\b/ nocase
+        $sch   = /schtasks(\.exe)?\s+\/create/ nocase
+        $svc   = /sc(\.exe)?\s+create\b/ nocase
+        $cron  = "/etc/cron" nocase
+        $rclocal = "/etc/rc.local" nocase
+    condition:
+        any of them
+}
