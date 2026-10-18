@@ -1,0 +1,53 @@
+// Strix bundled rules — infostealer / credential-access targets.
+
+rule Stealer_Browser_Credential_Paths {
+    meta:
+        severity    = high
+        category    = credential-access
+        attack      = T1555.003, T1539
+        description = "References browser credential / cookie stores targeted by stealers"
+    strings:
+        $chrome1 = "\\Google\\Chrome\\User Data\\" nocase
+        $chrome2 = "Login Data" nocase
+        $edge    = "\\Microsoft\\Edge\\User Data\\" nocase
+        $ff      = "\\Mozilla\\Firefox\\Profiles\\" nocase
+        $cookies = "Cookies" ascii
+        $vault   = "logins.json" nocase
+        $dpapi   = "CryptUnprotectData" ascii
+    condition:
+        2 of ($chrome1,$chrome2,$edge,$ff,$vault) or ($dpapi and 1 of ($chrome2,$cookies,$vault))
+}
+
+rule Stealer_Crypto_Wallet_Targets {
+    meta:
+        severity    = high
+        category    = credential-access
+        attack      = T1555
+        description = "References cryptocurrency wallet files/extensions"
+    strings:
+        $w1 = "wallet.dat" nocase
+        $w2 = "\\Electrum\\wallets" nocase
+        $w3 = "\\Exodus\\exodus.wallet" nocase
+        $w4 = "nkbihfbeogaeaoehlefnkodbefgpgknn" nocase  // MetaMask ext id
+        $w5 = "\\Ethereum\\keystore" nocase
+    condition:
+        any of them
+}
+
+rule Discovery_Security_Product_Enumeration {
+    meta:
+        severity    = medium
+        category    = discovery
+        attack      = T1518.001, T1082
+        description = "Enumerates installed security products / analysis tooling"
+    strings:
+        $av1 = "AntiVirusProduct" nocase
+        $av2 = "SELECT * FROM AntiVirusProduct" nocase
+        $av3 = "MsMpEng.exe" nocase
+        $av4 = "SecurityHealthService" nocase
+        $sb1 = "vmware" nocase
+        $sb2 = "VBoxService" nocase
+        $sb3 = "sandboxie" nocase
+    condition:
+        2 of ($av*) or 2 of ($sb*)
+}

@@ -1,0 +1,65 @@
+// Strix bundled rules — process injection shellcode stubs & C2 artifacts.
+
+rule Injection_API_Stack_Strings {
+    meta:
+        severity    = high
+        category    = injection
+        attack      = T1055
+        description = "Co-located process-injection API name strings (resolved dynamically)"
+    strings:
+        $a = "VirtualAllocEx" ascii wide
+        $b = "WriteProcessMemory" ascii wide
+        $c = "CreateRemoteThread" ascii wide
+        $d = "NtUnmapViewOfSection" ascii wide
+        $e = "SetThreadContext" ascii wide
+        $f = "QueueUserAPC" ascii wide
+    condition:
+        3 of them
+}
+
+rule ShellCode_Common_Stub {
+    meta:
+        severity    = high
+        category    = injection
+        attack      = T1055, T1106
+        description = "Common x86/x64 shellcode prologue patterns (PEB walk / API hashing)"
+    strings:
+        // 64-bit PEB access: mov rax, gs:[60h]
+        $peb64 = { 65 48 8B 04 25 60 00 00 00 }
+        // 32-bit PEB access: mov eax, fs:[30h]
+        $peb32 = { 64 A1 30 00 00 00 }
+        // call $+5 / pop (get EIP)
+        $getpc = { E8 00 00 00 00 5? }
+    condition:
+        any of them
+}
+
+rule C2_Cobalt_Strike_Beacon_Indicators {
+    meta:
+        severity    = critical
+        category    = c2
+        attack      = T1071, T1573
+        description = "Strings/config markers associated with Cobalt Strike beacons"
+    strings:
+        $ua   = "User-Agent: Mozilla" ascii
+        $pipe = /\\\\\\\\\.\\\\pipe\\\\(msagent|status|postex)/ nocase
+        $cfg1 = "%s as %s\\%s: %d" ascii
+        $cfg2 = "beacon.dll" ascii nocase
+        $cfg3 = "ReflectiveLoader" ascii
+        $spawn = "%windir%\\syswow64\\rundll32.exe" ascii nocase
+    condition:
+        $cfg3 or ($cfg2 and 1 of ($cfg1,$spawn,$pipe)) or (2 of ($cfg1,$spawn,$pipe,$ua))
+}
+
+rule Reflective_DLL_Loader {
+    meta:
+        severity    = high
+        category    = injection
+        attack      = T1055.001
+        description = "Reflective DLL loading marker"
+    strings:
+        $r1 = "ReflectiveLoader" ascii
+        $r2 = "_ReflectiveLoader@4" ascii
+    condition:
+        any of them
+}

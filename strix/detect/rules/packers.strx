@@ -1,0 +1,47 @@
+// Strix bundled rules — packers, crypters, and obfuscation artifacts.
+
+rule Packer_UPX {
+    meta:
+        severity    = medium
+        category    = packing
+        attack      = T1027.002
+        description = "UPX packer section/signature markers"
+    strings:
+        $u1 = "UPX0" ascii
+        $u2 = "UPX1" ascii
+        $u3 = "UPX!" ascii
+        $u4 = "$Info: This file is packed with the UPX" ascii
+    condition:
+        2 of them
+}
+
+rule Packer_Common_Signatures {
+    meta:
+        severity    = medium
+        category    = packing
+        attack      = T1027.002
+        description = "Section names associated with common packers/protectors"
+    strings:
+        $aspack  = ".aspack" ascii
+        $nspack  = ".nsp0" ascii
+        $pec     = ".petite" ascii
+        $mpress1 = ".MPRESS1" ascii
+        $themida = "Themida" ascii nocase
+        $vmp     = ".vmp0" ascii
+        $enigma  = ".enigma" ascii
+        $fsg     = "FSG!" ascii
+    condition:
+        any of them
+}
+
+rule Obfuscation_High_Entropy_With_Tiny_Imports {
+    meta:
+        severity    = medium
+        category    = packing
+        attack      = T1027
+        description = "Whole-file entropy consistent with packing/encryption"
+    strings:
+        $mz = { 4D 5A }
+    condition:
+        $mz and entropy > 7.2 and filesize > 4KB
+}
