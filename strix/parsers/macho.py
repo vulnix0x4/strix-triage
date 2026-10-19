@@ -157,7 +157,7 @@ def _read_segment(data, off, en, is64, pb: ParsedBinary, base: int = 0):
     fileoff += base  # fat-slice file offsets are relative to the slice start
     body = data[fileoff : fileoff + filesize] if filesize else b""
     pb.sections.append(ParsedSection(
-        name=name or "<seg>", offset=fileoff, raw_size=filesize,
+        name=name or "<seg>", offset=fileoff, raw_size=filesize, vaddr=_vmaddr,
         entropy=round(shannon(body), 3), characteristics=prot))
     if "write" in prot and "execute" in prot:
         pb.anomalies.append(f"segment {name!r} is writable AND executable (RWX)")
