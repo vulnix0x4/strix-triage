@@ -22,6 +22,28 @@ def _align(n: int, a: int) -> int:
     return (n + a - 1) // a * a
 
 
+def stackstring_code(secret: bytes, base_disp: int = -0x80) -> bytes:
+    """Emit inert x86-64 that builds ``secret`` byte-by-byte on the stack.
+
+    This is the 'stack string' obfuscation that defeats static string
+    extraction — the bytes never exist contiguously in the file. It touches
+    only the stack (rbp-relative), so it decodes identically regardless of
+    image base. It performs no I/O and simply returns.
+    """
+    assert base_disp + len(secret) < 0x7F, "secret too long for disp8 stub"
+    code = bytearray()
+    code += bytes([0x55])                               # push rbp
+    code += bytes([0x48, 0x89, 0xE5])                   # mov rbp, rsp
+    code += bytes([0x48, 0x81, 0xEC, 0x00, 0x01, 0, 0])  # sub rsp, 0x100
+    for i, ch in enumerate(secret):
+        code += bytes([0xC6, 0x45, (base_disp + i) & 0xFF, ch])   # mov byte [rbp+d8], ch
+    code += bytes([0xC6, 0x45, (base_disp + len(secret)) & 0xFF, 0x00])  # null term
+    code += bytes([0x48, 0x89, 0xEC])                   # mov rsp, rbp
+    code += bytes([0x5D])                               # pop rbp
+    code += bytes([0xC3])                               # ret
+    return bytes(code)
+
+
 def make_suspicious_pe(
     imports=(
         ("kernel32.dll", ["VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread",
@@ -40,6 +62,7 @@ def make_suspicious_pe(
         b"ReflectiveLoader",
     ),
     high_entropy_bytes: int = 4096,
+    text_code: bytes = b"\xcc" * 64,
 ) -> bytes:
     """Build an inert PE32+ specimen with suspicious static features."""
 
@@ -95,7 +118,7 @@ def make_suspicious_pe(
     rdata = bytes(rd)
 
     # ---- sections --------------------------------------------------------
-    text = b"\xcc" * 64  # int3 filler — inert, never executed
+    text = text_code  # filler by default; a decoder stub for emulation fixtures
     packed = os.urandom(high_entropy_bytes)
 
     secs = [
@@ -183,12 +206,28 @@ def make_benign_pe() -> bytes:
     return bytes(buf)
 
 
+def make_decoder_pe(secret: bytes = b"http://hidden-c2.top/beacon") -> bytes:
+    """A PE whose entry point reconstructs a hidden C2 URL on the stack.
+
+    The URL is *not* present as a contiguous string in the file — only
+    sandboxed emulation of the entry stub reveals it. Static imports/strings
+    are mundane, so the recovered string is the whole story.
+    """
+    return make_suspicious_pe(
+        imports=(("kernel32.dll", ["GetProcAddress", "LoadLibraryA", "VirtualAlloc"]),),
+        strings=(b"loading...", b"config.dat", b"%TEMP%\\svc.log"),
+        high_entropy_bytes=0,
+        text_code=stackstring_code(secret),
+    )
+
+
 def write_fixtures(dest_dir: str) -> dict:
     os.makedirs(dest_dir, exist_ok=True)
     out = {}
     specimens = {
         "specimen_suspicious.exe.bin": make_suspicious_pe(),
         "specimen_benign.exe.bin": make_benign_pe(),
+        "specimen_decoder.exe.bin": make_decoder_pe(),
         "specimen_notes.txt": b"just some harmless text\nnothing to see here\n",
     }
     for name, body in specimens.items():
