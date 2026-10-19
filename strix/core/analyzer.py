@@ -15,6 +15,9 @@ from typing import Optional
 
 from .. import __version__
 from ..detect import capabilities, engine, heuristics
+from ..disasm import disassemble
+from ..disasm.analyze import analyze_code
+from ..emulate.strings import recover_strings
 from ..extractors import iocs as ioc_mod
 from ..extractors import strings as str_mod
 from ..parsers import elf as elf_p
@@ -32,8 +35,10 @@ _MAX_CAP_MULT = 2.0
 
 class Analyzer:
     def __init__(self, extra_rule_paths: Optional[list[str]] = None,
-                 use_bundled_rules: bool = True, min_string_len: int = 5):
+                 use_bundled_rules: bool = True, min_string_len: int = 5,
+                 deep_code: bool = True):
         self.min_string_len = min_string_len
+        self.deep_code = deep_code  # disassembly + sandboxed emulation stages
         self.rules = engine.load_bundled() if use_bundled_rules else []
         if extra_rule_paths:
             self.rules += engine.load_paths(extra_rule_paths)
@@ -59,7 +64,15 @@ class Analyzer:
             if pb.format == "pe":
                 facts.hashes["imphash"] = hashing.imphash(pb.imports) or ""
 
-        self._run_strings_and_iocs(data, report)
+        # strings are extracted once and shared by IOC + emulation stages
+        extracted = str_mod.extract(data, min_len=self.min_string_len)
+        values = [s.value for s in extracted]
+        report.add_section("strings_total", len(extracted))
+        report.add_section("strings_sample", [s.to_dict() for s in extracted[:_STRINGS_IN_REPORT]])
+
+        self._run_iocs(values, report, origin="static")
+        if pb is not None and self.deep_code:
+            self._run_code_analysis(data, pb, values, report)
         self._run_signatures(data, facts, report)
 
         report.finished_at = _utcnow()
@@ -117,67 +130,119 @@ class Analyzer:
                 weight_multiplier=mult,
             ))
 
-    def _run_strings_and_iocs(self, data: bytes, report: AnalysisReport):
-        extracted = str_mod.extract(data, min_len=self.min_string_len)
-        values = [s.value for s in extracted]
+    def _run_iocs(self, values, report: AnalysisReport, origin: str = "static"):
         iset = ioc_mod.extract(values)
-        report.add_section("strings_total", len(extracted))
-        report.add_section("strings_sample", [s.to_dict() for s in extracted[:_STRINGS_IN_REPORT]])
-        report.add_section("iocs", iset.to_dict())
+        tag = "" if origin == "static" else f" [from {origin}]"
+        sfx = "" if origin == "static" else f".{origin}"
+        if origin == "static":
+            report.add_section("iocs", iset.to_dict())
+        elif iset.total():
+            report.add_section(f"iocs_{origin}", iset.to_dict())
 
-        # network C2 indicators
         if iset.urls or iset.ipv4 or iset.domains or iset.ipv6:
             ev = (iset.urls[:8] + iset.ipv4[:8] + iset.domains[:8])[:16]
             onion = any(".onion" in u for u in iset.urls) or any(d.endswith(".onion") for d in iset.domains)
             report.add(Finding(
-                id="ioc.network",
-                title=f"Embedded network indicators ({len(iset.urls)} URL, {len(iset.ipv4)} IPv4, {len(iset.domains)} domain)",
-                severity=Severity.MEDIUM if (iset.urls or iset.domains) else Severity.LOW,
+                id=f"ioc.network{sfx}",
+                title=f"Network indicators{tag} ({len(iset.urls)} URL, {len(iset.ipv4)} IPv4, {len(iset.domains)} domain)",
+                severity=Severity.HIGH if origin != "static" and (iset.urls or iset.domains)
+                else (Severity.MEDIUM if (iset.urls or iset.domains) else Severity.LOW),
                 category="ioc",
-                description="Hard-coded network endpoints may be C2 or download infrastructure.",
+                description="Hard-coded network endpoints may be C2 or download infrastructure."
+                + ("" if origin == "static" else " Recovered only after emulation — deliberately hidden."),
                 evidence=ev,
                 attack=["T1071"] + (["T1573"] if onion else []),
             ))
         if iset.crypto:
             report.add(Finding(
-                id="ioc.crypto_address",
-                title=f"Cryptocurrency address(es) embedded ({len(iset.crypto)})",
-                severity=Severity.MEDIUM,
-                category="ioc",
+                id=f"ioc.crypto_address{sfx}",
+                title=f"Cryptocurrency address(es){tag} ({len(iset.crypto)})",
+                severity=Severity.MEDIUM, category="ioc",
                 description="Wallet addresses are common in ransomware and clipboard-hijack coinstealers.",
-                evidence=iset.crypto[:8],
-                attack=["T1486"],
-            ))
+                evidence=iset.crypto[:8], attack=["T1486"]))
         if iset.suspicious:
             report.add(Finding(
-                id="ioc.suspicious_strings",
-                title=f"Suspicious command/technique strings ({len(iset.suspicious)})",
-                severity=Severity.HIGH if len(iset.suspicious) >= 3 else Severity.MEDIUM,
+                id=f"ioc.suspicious_strings{sfx}",
+                title=f"Suspicious command/technique strings{tag} ({len(iset.suspicious)})",
+                severity=Severity.HIGH if len(iset.suspicious) >= 3 or origin != "static" else Severity.MEDIUM,
                 category="ioc",
-                description="Strings matching known offensive tradecraft (LOLBins, PowerShell, persistence).",
-                evidence=iset.suspicious[:12],
-                attack=["T1059"],
-                weight_multiplier=min(_MAX_CAP_MULT, 1.0 + 0.08 * len(iset.suspicious)),
-            ))
+                description="Strings matching known offensive tradecraft (LOLBins, PowerShell, persistence)."
+                + ("" if origin == "static" else " Revealed by sandboxed emulation."),
+                evidence=iset.suspicious[:12], attack=["T1059"],
+                weight_multiplier=min(_MAX_CAP_MULT, 1.0 + 0.08 * len(iset.suspicious))))
         if iset.evasion:
             report.add(Finding(
-                id="ioc.evasion_strings",
-                title=f"Sandbox/VM/analysis-tool awareness ({len(iset.evasion)})",
-                severity=Severity.MEDIUM,
-                category="anti-analysis",
+                id=f"ioc.evasion_strings{sfx}",
+                title=f"Sandbox/VM/analysis-tool awareness{tag} ({len(iset.evasion)})",
+                severity=Severity.MEDIUM, category="anti-analysis",
                 description="References to VM, sandbox or debugger product names suggest evasion checks.",
-                evidence=iset.evasion[:12],
-                attack=["T1497"],
-            ))
-        if iset.pdb:
+                evidence=iset.evasion[:12], attack=["T1497"]))
+        if iset.pdb and origin == "static":
             report.add(Finding(
-                id="ioc.pdb_path",
-                title="Debug PDB path leaked",
-                severity=Severity.INFO,
-                category="ioc",
+                id="ioc.pdb_path", title="Debug PDB path leaked",
+                severity=Severity.INFO, category="ioc",
                 description="Build path can attribute/cluster the sample.",
-                evidence=iset.pdb[:5],
+                evidence=iset.pdb[:5]))
+
+    def _run_code_analysis(self, data: bytes, pb, static_values, report: AnalysisReport):
+        image_base = pb.extra.get("image_base", 0) or 0
+        segments: list[tuple[int, bytes]] = []
+        exec_sections: list[tuple[int, bytes, str]] = []
+        for s in pb.sections:
+            if s.raw_size <= 0 or s.offset < 0:
+                continue
+            body = data[s.offset:s.offset + s.raw_size]
+            if not body:
+                continue
+            va = (image_base + s.vaddr) if pb.format == "pe" else s.vaddr
+            if va <= 0:
+                continue
+            segments.append((va, body))
+            if "execute" in s.characteristics:
+                exec_sections.append((va, body, s.name))
+        if not exec_sections:
+            return
+
+        # --- static disassembly heuristics --------------------------------
+        insns = []
+        for va, body, _name in exec_sections[:4]:
+            insns.extend(disassemble(body, addr=va, max_insns=12000))
+        if insns:
+            stats, code_findings = analyze_code(insns)
+            for f in code_findings:
+                report.add(f)
+            top = sorted(stats.mnemonics.items(), key=lambda kv: kv[1], reverse=True)[:15]
+            report.add_section("code", {
+                "instructions_decoded": stats.count,
+                "undecodable": stats.invalid,
+                "top_mnemonics": dict(top),
+                "disasm_sample": [str(i) for i in insns[:80]],
+            })
+
+        # --- sandboxed emulation: recover hidden strings ------------------
+        entry_points = []
+        if pb.entry_point:
+            ev = (image_base + pb.entry_point) if pb.format == "pe" else pb.entry_point
+            entry_points.append(ev)
+        try:
+            recovered = recover_strings(segments, entry_points, static_values)
+        except Exception as exc:  # emulation must never break a scan
+            report.note_error(f"emulation error: {exc!r}")
+            return
+        if recovered:
+            report.add_section("decoded_strings", [r.to_dict() for r in recovered[:200]])
+            report.add(Finding(
+                id="emulation.decoded_strings",
+                title=f"Emulation recovered {len(recovered)} hidden string(s)",
+                severity=Severity.HIGH,
+                category="anti-analysis",
+                description="Strings that do not appear statically were reconstructed by sandboxed emulation of the sample's own decode routines (stack strings / self-decrypting data).",
+                evidence=[r.value[:100] for r in recovered[:12]],
+                attack=["T1027", "T1140"],
+                weight_multiplier=min(_MAX_CAP_MULT, 1.0 + 0.05 * len(recovered)),
             ))
+            # feed decoded strings back through IOC/suspicious detection
+            self._run_iocs([r.value for r in recovered], report, origin="emulation")
 
     def _run_signatures(self, data: bytes, facts: FileFacts, report: AnalysisReport):
         if not self.rules:

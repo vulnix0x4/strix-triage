@@ -68,15 +68,15 @@ def parse(data: bytes) -> ParsedBinary:
         base = e_shoff + i * e_shentsize
         try:
             if is64:
-                nameoff, stype, flags, _addr, offset, size = struct.unpack_from(en + "IIQQQQ", data, base)
+                nameoff, stype, flags, sh_addr, offset, size = struct.unpack_from(en + "IIQQQQ", data, base)
                 link = struct.unpack_from(en + "I", data, base + 40)[0]
             else:
-                nameoff, stype, flags, _addr, offset, size = struct.unpack_from(en + "IIIIII", data, base)
+                nameoff, stype, flags, sh_addr, offset, size = struct.unpack_from(en + "IIIIII", data, base)
                 link = struct.unpack_from(en + "I", data, base + 24)[0]
         except struct.error:
             pb.anomalies.append("truncated section table")
             break
-        secs.append((nameoff, stype, flags, offset, size, link))
+        secs.append((nameoff, stype, flags, offset, size, link, sh_addr))
 
     # section-header string table
     shstr_off = secs[e_shstrndx][3] if e_shstrndx < len(secs) else 0
@@ -87,11 +87,11 @@ def parse(data: bytes) -> ParsedBinary:
         return data[p:end].decode("latin-1", "replace") if 0 <= p < len(data) and end > 0 else ""
 
     dynsym = dynstr = None
-    for nameoff, stype, flags, offset, size, link in secs:
+    for nameoff, stype, flags, offset, size, link, sh_addr in secs:
         nm = sname(nameoff)
         body = data[offset : offset + size] if stype != 8 and size else b""  # skip NOBITS
         pb.sections.append(ParsedSection(
-            name=nm or "<unnamed>", offset=offset, raw_size=size,
+            name=nm or "<unnamed>", offset=offset, raw_size=size, vaddr=sh_addr,
             entropy=round(shannon(body), 3),
             characteristics=[c for c, bit in (("write", 1), ("alloc", 2), ("execute", 4)) if flags & bit],
         ))
